@@ -1,0 +1,363 @@
+---
+title: "mlHW1"
+author: "Jason Wang"
+date: "2024-10-29"
+output: pdf_document
+---
+
+```{r}
+#import libraries
+library(tidyverse)
+library(mice)
+library(earth)
+library(Hmisc)
+library(ROCit)
+```
+
+```{r}
+#import dataset
+ins_t<- read_csv("~/msa/main/Machine Learning/hw/Homework1_ML/insurance_t.csv")
+
+ins_v <- read_csv("~/msa/main/Machine Learning/hw/Homework1_ML/insurance_v.csv")
+```
+```{r}
+# peeking at data
+skimr::skim(ins_t)
+```
+
+```{r}
+# table(ins.t$MMCRED, ins.t$INS)
+ins_t$MMCRED <- as.character(ins_t$MMCRED)
+ins_t$MMCRED[which(ins_t$MMCRED > 2)] <- "3+"
+# table(ins.t$MMCRED, ins.t$INS)
+
+
+imputed_data <- mice(ins_t, m = 5, method = 'pmm', maxit = 5)
+
+train <- complete(imputed_data)
+
+#MICE (Multivariate Imputation by Chained Equations) is an advanced statistical method used for imputing missing data in datasets with multiple variables. It works by modeling each variable with missing values as a function of other variables in the dataset, allowing for the creation of multiple imputed datasets that reflect the uncertainty of the missing values.
+```
+
+```{r}
+stripplot(imputed_data, pch = 20, cex = 1.5)
+densityplot(imputed_data)
+#I have no clue what i am looking at...
+```
+
+```{r}
+earth_mod <- earth(INS ~ ., data = train, 
+                   glm = list(family = binomial),
+                   nfold = 10,
+                   pmethod = "cv",
+                   trace = .5)
+
+summary(earth_mod)
+```
+```{r}
+evimp(earth_mod)
+#the more nsubsets the better the variables
+#gcv is the approximation of RSS on leave one out cross validation
+#rss the scaled version of decrease in residual sum of squares relative to the previous subset
+#           nsubsets   gcv    rss
+# SAVBAL          33 100.0  100.0
+# CDBAL           31  66.3   68.1
+# DDA             31  65.7   67.5
+# DDABAL          31  65.7   67.5
+# MMBAL           29  45.4   48.8
+# BRANCHB15       27  37.1   41.2
+# ACCTAGE         26  34.7   39.0
+# BRANCHB14       23  30.2   34.6
+# IRA             22  27.7   32.3
+# CHECKS          21  25.5   30.4
+# TELLER          20  23.7   28.7
+# ATMAMT          19  21.4   26.7
+# BRANCHB16       18  18.5   24.2
+# CC              17  15.7   21.9
+# CCBAL           16  12.9   19.7
+# INV             15   9.2   17.2
+# SAV             12   3.2   13.5
+# NSFAMT          11  -5.3   11.5
+# DEP             10  -7.0    9.9
+```
+
+```{r}
+#running code chunk... not that useful.
+train_earth <- train
+train_earth$p_hat <- predict(earth_mod, type = "response")
+p1 <- train_earth$p_hat[train_earth$INS == 1]
+p0 <- train_earth$p_hat[train_earth$INS == 0]
+
+coef_discrim <- mean(p1) - mean(p0)
+# [1] 0.2528108, moderate ability to to discriminate, also discriminates higher probabilities for positives.
+ggplot(train_earth, aes(p_hat, fill = factor(INS))) +
+  geom_density(alpha = .7) +
+  scale_fill_grey() +
+  labs(x = "Predicted Probability", fill = "Outcome", title = paste("Coefficient of Discrimination =", round (coef_discrim, 3), sep = ""))
+```
+
+
+```{r}
+train_earth$p_hat <- as.numeric(train_earth$p_hat)
+str(train_earth$p_hat)
+
+train_earth$INS <- ifelse(train_earth$INS == "1", 1, 0)
+unique(train_earth$INS)
+
+logit_roc <- rocit(class = train_earth$INS, score =train_earth$p_hat)
+
+plot(logit_roc)
+
+auc_value <- logit_roc$AUC
+
+# "AUC: 0.803023727998688"
+# can correctly distinguish between positive and negative classes 80% of the time
+
+	# •	AUC:
+	# •	An AUC of 0.8 indicates that there is an 80% chance that a randomly chosen positive instance will have a higher predicted probability than a randomly chosen negative instance. AUC provides a comprehensive view of the model’s performance across all thresholds.
+	# 
+	# •	Coefficient of Discrimination:
+	# •	A coefficient of discrimination of 0.25, for example, means that the average predicted probability for the positive class is 0.25 higher than that for the negative class. This metric specifically focuses on the separation between the two classes in terms of predicted probabilities rather than their rank order.
+```
+
+```{r}
+apply(train, 2, function(x) length(unique(x)))
+# 
+# ACCTAGE     DDA  DDABAL     DEP  DEPAMT 
+#     365       2    6800      15    6540 
+#  CHECKS  DIRDEP     NSF  NSFAMT   PHONE 
+#      39       2       2     668      16 
+#  TELLER     SAV  SAVBAL     ATM  ATMAMT 
+#      24       2    3832       2    4790 
+#     POS  POSAMT      CD   CDBAL     IRA 
+#      33    1708       2     355       2 
+#  IRABAL     INV  INVBAL      MM   MMBAL 
+#     446       3     138       2    1019 
+#  MMCRED      CC   CCBAL  CCPURC     SDB 
+#       4       3    2896       6       2 
+#  INCOME   LORES   HMVAL     AGE CRSCORE 
+#     176      37     148      78     255 
+#  INAREA     INS  BRANCH 
+#       2       2      19 
+
+```
+
+```{r}
+train_gam <- lapply(train, function(column) {
+  if (length(unique(column)) <= 10) {
+    as.factor(column)  
+  } else {
+    column  
+  }
+})
+train_gam <- as.data.frame(train_gam)
+str(train_gam)
+```
+
+
+```{r}
+continuous_vars <- names(train_gam)[sapply(train_gam, is.numeric)]
+
+noncontinuous_vars <- names(train_gam)[sapply(train_gam, function(x) !is.numeric(x))]
+
+noncontinuous_vars <- noncontinuous_vars[noncontinuous_vars != "INS"]
+
+formula_string <- paste("INS ~ ", paste(sprintf("s(%s)", continuous_vars), collapse = " + "))
+
+formula_string2 <- paste(paste(noncontinuous_vars, collapse = " + "))
+
+combined_formula_string <- paste(formula_string, "+", formula_string2)
+
+combined_formula <- as.formula(combined_formula_string)
+
+ins_gam <- mgcv::gam(combined_formula, method = 'REML', select = TRUE, data = train_gam, family = binomial(link = "logit"))
+
+ins_gam
+```
+
+```{r}
+summary(ins_gam)
+# 
+# 
+# Family: binomial 
+# Link function: logit 
+# 
+# Formula:
+# INS ~ s(ACCTAGE) + s(DDABAL) + s(DEP) + s(DEPAMT) + s(CHECKS) + 
+#     s(NSFAMT) + s(PHONE) + s(TELLER) + s(SAVBAL) + s(ATMAMT) + 
+#     s(POS) + s(POSAMT) + s(CDBAL) + s(IRABAL) + s(INVBAL) + s(MMBAL) + 
+#     s(CCBAL) + s(INCOME) + s(LORES) + s(HMVAL) + s(AGE) + s(CRSCORE) + 
+#     DDA + DIRDEP + NSF + SAV + ATM + CD + IRA + INV + MM + MMCRED + 
+#     CC + CCPURC + SDB + INAREA + BRANCH
+# 
+# Parametric coefficients:
+#              Estimate Std. Error z value
+# (Intercept) -0.138924   0.179447  -0.774
+# DDA1        -1.019002   0.102959  -9.897
+# DIRDEP1     -0.090915   0.067733  -1.342
+# NSF1         0.271734   0.106221   2.558
+# SAV1        -0.002414   0.071186  -0.034
+# ATM1        -0.146116   0.070610  -2.069
+# CD1          0.798830   0.094914   8.416
+# IRA1         0.441392   0.121564   3.631
+# INV1         0.622327   0.148389   4.194
+# MM1          0.932455   0.221405   4.212
+# MMCRED1     -0.203227   0.160216  -1.268
+# MMCRED2      0.025325   0.263989   0.096
+# MMCRED3+    -0.764684   0.718757  -1.064
+# CC1          0.350801   0.060957   5.755
+# CCPURC1      0.054119   0.092158   0.587
+# CCPURC2      0.082318   0.188558   0.437
+# CCPURC3     -0.341510   0.426646  -0.800
+# CCPURC4     -1.777688   1.180281  -1.506
+# SDB1         0.057854   0.084490   0.685
+# INAREA1     -0.064388   0.137649  -0.468
+# BRANCHB10    0.184253   0.268930   0.685
+# BRANCHB11    0.197054   0.320124   0.616
+# BRANCHB12    0.280733   0.219407   1.280
+# BRANCHB13    0.172610   0.214223   0.806
+# BRANCHB14   -1.129535   0.201011  -5.619
+# BRANCHB15   -0.785082   0.142326  -5.516
+# BRANCHB16   -0.672423   0.165324  -4.067
+# BRANCHB17    0.247663   0.183933   1.346
+# BRANCHB18   -0.138107   0.216117  -0.639
+# BRANCHB19   -0.046017   0.289988  -0.159
+# BRANCHB2    -0.069816   0.111030  -0.629
+# BRANCHB3     0.072834   0.126258   0.577
+# BRANCHB4     0.060928   0.108709   0.560
+# BRANCHB5    -0.021809   0.125323  -0.174
+# BRANCHB6     0.112397   0.149474   0.752
+# BRANCHB7    -0.048343   0.151168  -0.320
+# BRANCHB8     0.153616   0.151776   1.012
+# BRANCHB9     0.224912   0.210019   1.071
+#             Pr(>|z|)    
+# (Intercept) 0.438825    
+# DDA1         < 2e-16 ***
+# DIRDEP1     0.179516    
+# NSF1        0.010521 *  
+# SAV1        0.972954    
+# ATM1        0.038515 *  
+# CD1          < 2e-16 ***
+# IRA1        0.000282 ***
+# INV1        2.74e-05 ***
+# MM1         2.54e-05 ***
+# MMCRED1     0.204634    
+# MMCRED2     0.923573    
+# MMCRED3+    0.287375    
+# CC1         8.67e-09 ***
+# CCPURC1     0.557045    
+# CCPURC2     0.662424    
+# CCPURC3     0.423448    
+# CCPURC4     0.132027    
+# SDB1        0.493505    
+# INAREA1     0.639947    
+# BRANCHB10   0.493260    
+# BRANCHB11   0.538188    
+# BRANCHB12   0.200717    
+# BRANCHB13   0.420389    
+# BRANCHB14   1.92e-08 ***
+# BRANCHB15   3.47e-08 ***
+# BRANCHB16   4.76e-05 ***
+# BRANCHB17   0.178146    
+# BRANCHB18   0.522798    
+# BRANCHB19   0.873916    
+# BRANCHB2    0.529478    
+# BRANCHB3    0.564030    
+# BRANCHB4    0.575164    
+# BRANCHB5    0.861847    
+# BRANCHB6    0.452084    
+# BRANCHB7    0.749122    
+# BRANCHB8    0.311480    
+# BRANCHB9    0.284209    
+# ---
+# Signif. codes:  
+# 0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+# 
+# Approximate significance of smooth terms:
+#                 edf Ref.df  Chi.sq  p-value
+# s(ACCTAGE) 3.015826      9  26.327 2.33e-06
+# s(DDABAL)  7.330566      9 269.495  < 2e-16
+# s(DEP)     1.213476      9   3.937 0.034522
+# s(DEPAMT)  0.458165      9   0.574 0.275151
+# s(CHECKS)  0.971164      9  32.103  < 2e-16
+# s(NSFAMT)  0.001163      9   0.000 0.899387
+# s(PHONE)   0.652136      9   1.801 0.095015
+# s(TELLER)  1.884788      9  42.149  < 2e-16
+# s(SAVBAL)  6.730533      9 314.989  < 2e-16
+# s(ATMAMT)  3.443857      9  41.272  < 2e-16
+# s(POS)     0.001524      9   0.000 0.766855
+# s(POSAMT)  0.001138      9   0.000 0.877072
+# s(CDBAL)   0.908373      9   9.053 0.001577
+# s(IRABAL)  0.765114      9   2.733 0.058605
+# s(INVBAL)  0.001555      9   0.000 0.774554
+# s(MMBAL)   0.417985      9   0.695 0.181360
+# s(CCBAL)   6.235976      9  25.132 0.000168
+# s(INCOME)  0.001260      9   0.000 0.963201
+# s(LORES)   0.001446      9   0.000 0.862650
+# s(HMVAL)   0.001627      9   0.001 0.572904
+# s(AGE)     0.001385      9   0.000 0.978658
+# s(CRSCORE) 0.001317      9   0.000 0.684911
+#               
+# s(ACCTAGE) ***
+# s(DDABAL)  ***
+# s(DEP)     *  
+# s(DEPAMT)     
+# s(CHECKS)  ***
+# s(NSFAMT)     
+# s(PHONE)   .  
+# s(TELLER)  ***
+# s(SAVBAL)  ***
+# s(ATMAMT)  ***
+# s(POS)        
+# s(POSAMT)     
+# s(CDBAL)   ** 
+# s(IRABAL)  .  
+# s(INVBAL)     
+# s(MMBAL)      
+# s(CCBAL)   ***
+# s(INCOME)     
+# s(LORES)      
+# s(HMVAL)      
+# s(AGE)        
+# s(CRSCORE)    
+# ---
+# Signif. codes:  
+# 0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+# 
+# R-sq.(adj) =  0.243   Deviance explained = 20.4%
+# -REML =   4468  Scale est. = 1         n = 8495
+```
+
+```{r}
+train_gam$p_hat <- predict(ins_gam, type = "response")
+p1 <- train_gam$p_hat[train_gam$INS == 1]
+p0 <- train_gam$p_hat[train_gam$INS == 0]
+
+coef_discrim <- mean(p1) - mean(p0)
+# [1] 0.2528108, moderate ability to to discriminate, also discriminates higher probabilities for positives.
+ggplot(train_gam, aes(p_hat, fill = factor(INS))) +
+  geom_density(alpha = .7) +
+  scale_fill_grey() +
+  labs(x = "Predicted Probability", fill = "Outcome", title = paste("Coefficient of Discrimination =", round (coef_discrim, 3), sep = ""))
+
+
+```
+
+```{r}
+train_gam$p_hat <- as.numeric(train_gam$p_hat)
+str(train_gam$p_hat)
+
+train_gam$INS <- ifelse(train_gam$INS == "1", 1, 0)
+unique(train_gam$INS)
+
+logit_roc <- rocit(class = train_gam$INS, score =train_gam$p_hat)
+
+plot(logit_roc)
+
+auc_value <- logit_roc$AUC
+
+# [1] 0.8017816
+
+```
+
+
